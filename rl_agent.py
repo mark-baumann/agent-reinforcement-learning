@@ -83,18 +83,28 @@ def setup_tracking(project: str = "rl-agent-training",
 
 class GridWorld:
     """
-    4×4 Grid. Agent startet bei (0,0), Ziel bei (3,3).
+    N×N Grid. Agent startet bei (0,0), Ziel bei (N-1,N-1).
     Aktionen: 0=hoch, 1=rechts, 2=runter, 3=links
     Belohnung: +1 am Ziel, -0.01 pro Schritt (Effizienz-Anreiz)
+
+    Varianten:
+    - Standard: Leeres Grid
+    - Obstacles: Hindernisse, die nicht betreten werden können
+    - Cliff: Klippen-Umgebung (Sutton & Barto)
     """
 
-    def __init__(self, size: int = 4):
+    def __init__(self, size: int = 4, obstacles: Optional[List[tuple]] = None,
+                 cliff: bool = False, start: Optional[tuple] = None,
+                 goal: Optional[tuple] = None):
         self.size = size
-        self.goal = (size - 1, size - 1)
+        self.goal = goal or (size - 1, size - 1)
+        self.start = start or (0, 0)
+        self.obstacles = set(obstacles or [])
+        self.cliff = cliff
         self.reset()
 
     def reset(self):
-        self.pos = (0, 0)
+        self.pos = self.start
         return self.pos
 
     def step(self, action: int) -> Tuple[tuple, float, bool]:
@@ -104,7 +114,18 @@ class GridWorld:
         elif action == 2:  r = min(self.size - 1, r + 1)
         elif action == 3:  c = max(0, c - 1)
 
-        self.pos = (r, c)
+        new_pos = (r, c)
+
+        # Cliff: falling off the cliff resets to start with penalty
+        if self.cliff and r == self.size - 1 and 0 < c < self.size - 1:
+            self.pos = self.start
+            return self.pos, -1.0, False  # penalty, not done
+
+        # Obstacle: stay in place with penalty
+        if new_pos in self.obstacles:
+            return self.pos, -0.1, False
+
+        self.pos = new_pos
         done = self.pos == self.goal
         reward = 1.0 if done else -0.01
         return self.pos, reward, done
@@ -182,6 +203,25 @@ class QLearning:
                     grid[r, c] = np.argmax(self.Q[(r, c)])
         return grid
 
+    def save_checkpoint(self, path: str = "q_learning_checkpoint.npz"):
+        """Speichert Q-Table und Hyperparameter."""
+        q_dict = {str(k): v for k, v in self.Q.items()}
+        np.savez(path,
+                 lr=self.lr, gamma=self.gamma, epsilon=self.epsilon,
+                 q_keys=np.array(list(q_dict.keys())),
+                 q_values=np.array(list(q_dict.values())))
+        print(f"💾 Q-Learning Checkpoint gespeichert → {path}")
+
+    def load_checkpoint(self, path: str = "q_learning_checkpoint.npz"):
+        """Lädt Q-Table und Hyperparameter."""
+        data = np.load(path, allow_pickle=True)
+        self.lr = float(data['lr'])
+        self.gamma = float(data['gamma'])
+        self.epsilon = float(data['epsilon'])
+        for k, v in zip(data['q_keys'], data['q_values']):
+            self.Q[eval(k)] = v
+        print(f"📂 Q-Learning Checkpoint geladen ← {path}")
+
 
 # ═══════════════════════════════════════════════════════════════
 # 2. Policy Gradient (REINFORCE)
@@ -254,6 +294,24 @@ class PolicyGradient:
             self.b2 -= self.lr * dlogits
             self.W1 -= self.lr * np.outer(state, dh)
             self.b1 -= self.lr * dh
+
+    def save_checkpoint(self, path: str = "pg_checkpoint.npz"):
+        """Speichert Netzwerk-Gewichte und Hyperparameter."""
+        np.savez(path,
+                 W1=self.W1, b1=self.b1, W2=self.W2, b2=self.b2,
+                 lr=self.lr, gamma=self.gamma)
+        print(f"💾 Policy Gradient Checkpoint gespeichert → {path}")
+
+    def load_checkpoint(self, path: str = "pg_checkpoint.npz"):
+        """Lädt Netzwerk-Gewichte und Hyperparameter."""
+        data = np.load(path)
+        self.W1 = data['W1']
+        self.b1 = data['b1']
+        self.W2 = data['W2']
+        self.b2 = data['b2']
+        self.lr = float(data['lr'])
+        self.gamma = float(data['gamma'])
+        print(f"📂 Policy Gradient Checkpoint geladen ← {path}")
 
 
 # ═══════════════════════════════════════════════════════════════
