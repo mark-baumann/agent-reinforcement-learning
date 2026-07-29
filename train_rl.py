@@ -22,6 +22,7 @@ from pathlib import Path
 from rl_agent import (
     GridWorld, QLearning, PolicyGradient, DQNAgent,
     setup_tracking, get_sweep_config, OpenPipeLogger,
+    log_model_artifact, log_predictions_table,
     WANDB_AVAILABLE, OPENPIPE_AVAILABLE, TORCH_AVAILABLE
 )
 
@@ -66,6 +67,14 @@ def train_q_learning(env: GridWorld, config: dict, wandb_run=None,
     # Checkpoint speichern
     ckpt_path = CHECKPOINT_DIR / f"q_learning_{config.get('env_name', 'grid')}.npz"
     agent.save_checkpoint(str(ckpt_path))
+
+    # W&B Artifact loggen
+    if wandb_run:
+        log_model_artifact(wandb_run, str(ckpt_path),
+                          f"q-learning-{config.get('env_name', 'grid')}",
+                          metadata={"algorithm": "q-learning",
+                                    "avg_reward_10": float(avg_last_10),
+                                    "avg_reward_100": float(avg_last_100)})
 
     # OpenPipe Logging
     if op_logger:
@@ -137,6 +146,13 @@ def train_policy_gradient(config: dict, wandb_run=None,
     ckpt_path = CHECKPOINT_DIR / "policy_gradient.npz"
     pg.save_checkpoint(str(ckpt_path))
 
+    # W&B Artifact loggen
+    if wandb_run:
+        log_model_artifact(wandb_run, str(ckpt_path),
+                          "policy-gradient-reinforce",
+                          metadata={"algorithm": "reinforce",
+                                    "avg_reward_10": float(avg_last_10)})
+
     return pg
 
 
@@ -196,6 +212,14 @@ def train_dqn(env: GridWorld, config: dict, wandb_run=None,
     # Checkpoint
     ckpt_path = CHECKPOINT_DIR / f"dqn_{config.get('env_name', 'grid')}.pt"
     dqn.save_checkpoint(str(ckpt_path))
+
+    # W&B Artifact loggen
+    if wandb_run:
+        log_model_artifact(wandb_run, str(ckpt_path),
+                          f"dqn-{config.get('env_name', 'grid')}",
+                          metadata={"algorithm": "dqn",
+                                    "avg_reward_10": float(avg_last_10),
+                                    "avg_reward_100": float(avg_last_100)})
 
     if op_logger:
         op_logger.log_episode({

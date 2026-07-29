@@ -40,7 +40,10 @@ except ImportError:
 def setup_tracking(project: str = "rl-agent-training",
                    config: dict = None,
                    use_wandb: bool = True,
-                   use_openpipe: bool = True):
+                   use_openpipe: bool = True,
+                   tags: list = None,
+                   group: str = None,
+                   job_type: str = "train"):
     """
     Initialisiert W&B und/oder OpenPipe für Experiment-Tracking.
 
@@ -49,6 +52,9 @@ def setup_tracking(project: str = "rl-agent-training",
         config: Hyperparameter-Dict
         use_wandb: W&B-Tracking aktivieren
         use_openpipe: OpenPipe-Tracking aktivieren
+        tags: Tags für W&B-Run
+        group: Gruppe für W&B-Run (z.B. "q-learning-experiments")
+        job_type: Job-Typ (train, eval, sweep)
     """
     run = None
     op_client = None
@@ -59,7 +65,9 @@ def setup_tracking(project: str = "rl-agent-training",
             project=project,
             config=config or {},
             mode=mode,
-            tags=["rl", "q-learning", "policy-gradient"]
+            tags=tags or ["rl", "q-learning", "policy-gradient"],
+            group=group,
+            job_type=job_type,
         )
         print(f"📊 W&B initialisiert (mode={mode})")
 
@@ -75,6 +83,34 @@ def setup_tracking(project: str = "rl-agent-training",
             print("⚠️  OpenPipe API-Key nicht gesetzt — überspringe")
 
     return run, op_client
+
+
+def log_model_artifact(wandb_run, checkpoint_path: str, model_name: str,
+                       metadata: dict = None, aliases: list = None):
+    """Loggt ein Modell-Checkpoint als W&B Artifact."""
+    if not wandb_run or not WANDB_AVAILABLE:
+        return
+    import wandb as wb
+    artifact = wb.Artifact(
+        name=model_name,
+        type="model",
+        metadata=metadata or {},
+    )
+    artifact.add_file(checkpoint_path)
+    wandb_run.log_artifact(artifact, aliases=aliases or ["latest"])
+    print(f"📦 W&B Artifact geloggt: {model_name} → {checkpoint_path}")
+
+
+def log_predictions_table(wandb_run, states: list, actions: list,
+                          rewards: list, table_name: str = "predictions"):
+    """Loggt eine Tabelle mit Vorhersagen für W&B Dashboard."""
+    if not wandb_run or not WANDB_AVAILABLE:
+        return
+    import wandb as wb
+    table = wb.Table(columns=["state", "action", "reward"])
+    for s, a, r in zip(states, actions, rewards):
+        table.add_data(str(s), a, r)
+    wandb_run.log({table_name: table})
 
 
 # ═══════════════════════════════════════════════════════════════
