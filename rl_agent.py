@@ -214,12 +214,13 @@ class QLearning:
 
     def load_checkpoint(self, path: str = "q_learning_checkpoint.npz"):
         """Lädt Q-Table und Hyperparameter."""
+        import ast
         data = np.load(path, allow_pickle=True)
         self.lr = float(data['lr'])
         self.gamma = float(data['gamma'])
         self.epsilon = float(data['epsilon'])
         for k, v in zip(data['q_keys'], data['q_values']):
-            self.Q[eval(k)] = v
+            self.Q[ast.literal_eval(k)] = v
         print(f"📂 Q-Learning Checkpoint geladen ← {path}")
 
 

@@ -31,6 +31,17 @@ CHECKPOINT_DIR = Path("checkpoints")
 CHECKPOINT_DIR.mkdir(exist_ok=True)
 
 
+def _make_env(env_type: str, size: int) -> GridWorld:
+    """Erstellt eine GridWorld-Umgebung basierend auf Typ und Größe."""
+    if env_type == "cliff":
+        return GridWorld(size=size, cliff=True)
+    elif env_type == "obstacles":
+        obstacles = [(1, 1), (2, 2), (1, 3)] if size >= 4 else [(1, 1)]
+        return GridWorld(size=size, obstacles=obstacles)
+    else:
+        return GridWorld(size=size)
+
+
 def train_sweep():
     """Wird von wandb.agent() pro Sweep-Run aufgerufen."""
     import wandb
@@ -40,14 +51,7 @@ def train_sweep():
     # ── Environment ──────────────────────────────────────────
     env_type = wandb.config.get("env", "standard")
     size = wandb.config.get("size", 4)
-
-    if env_type == "cliff":
-        env = GridWorld(size=size, cliff=True)
-    elif env_type == "obstacles":
-        obstacles = [(1, 1), (2, 2), (1, 3)] if size >= 4 else [(1, 1)]
-        env = GridWorld(size=size, obstacles=obstacles)
-    else:
-        env = GridWorld(size=size)
+    env = _make_env(env_type, size)
 
     # ── Agent ─────────────────────────────────────────────────
     agent = QLearning(
@@ -84,7 +88,6 @@ def _run_local_grid_search(sweep_config: dict, args):
     """Führt einen lokalen Grid-Search ohne W&B Cloud durch."""
     import itertools
 
-    params = sweep_config["parameters"]
     lr_values = [0.01, 0.05, 0.1, 0.2, 0.5]
     gamma_values = [0.9, 0.95, 0.99]
     eps_values = [0.1, 0.3, 0.5]
@@ -98,13 +101,7 @@ def _run_local_grid_search(sweep_config: dict, args):
     results = []
 
     for lr, gamma, eps in itertools.product(lr_values, gamma_values, eps_values):
-        if args.env == "cliff":
-            env = GridWorld(size=args.size, cliff=True)
-        elif args.env == "obstacles":
-            obstacles = [(1, 1), (2, 2), (1, 3)] if args.size >= 4 else [(1, 1)]
-            env = GridWorld(size=args.size, obstacles=obstacles)
-        else:
-            env = GridWorld(size=args.size)
+        env = _make_env(args.env, args.size)
 
         agent = QLearning(env, lr=lr, gamma=gamma, epsilon=eps)
         rewards = agent.train(episodes=args.episodes)
@@ -131,13 +128,7 @@ def _run_local_grid_search(sweep_config: dict, args):
     print(f"{'='*60}")
 
     # ── Save best model ──────────────────────────────────────
-    if args.env == "cliff":
-        env = GridWorld(size=args.size, cliff=True)
-    elif args.env == "obstacles":
-        obstacles = [(1, 1), (2, 2), (1, 3)] if args.size >= 4 else [(1, 1)]
-        env = GridWorld(size=args.size, obstacles=obstacles)
-    else:
-        env = GridWorld(size=args.size)
+    env = _make_env(args.env, args.size)
 
     best_agent = QLearning(env, **best_config)
     best_agent.train(episodes=args.episodes)
