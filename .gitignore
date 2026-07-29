@@ -5,3 +5,4 @@ wandb_runs/
 __pycache__/
 .venv/
 *.pyc
+uv.lock
