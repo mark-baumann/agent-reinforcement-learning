@@ -386,7 +386,15 @@ if TORCH_AVAILABLE:
             self.loss_fn = nn.MSELoss()
 
         def select_action(self, state, evaluate: bool = False) -> int:
-            """Epsilon-greedy Action-Selection."""
+            """Epsilon-greedy Action-Selection.
+
+            Args:
+                state: Current state (numpy array or tuple).
+                evaluate: If True, always pick greedy action (no exploration).
+
+            Returns:
+                Selected action index.
+            """
             if evaluate or random.random() > self.epsilon:
                 with torch.no_grad():
                     state_t = torch.FloatTensor(state).unsqueeze(0).to(self.device)
@@ -395,11 +403,26 @@ if TORCH_AVAILABLE:
             return random.randrange(self.action_dim)
 
         def push(self, state, action, reward, next_state, done):
-            """Erfahrung im Replay-Buffer speichern."""
+            """Store a transition in the replay buffer.
+
+            Args:
+                state: Current state before the action.
+                action: Action taken.
+                reward: Reward received.
+                next_state: Resulting state after the action.
+                done: Whether the episode terminated.
+            """
             self.memory.append((state, action, reward, next_state, done))
 
         def update(self):
-            """Ein Trainingsschritt (Double DQN)."""
+            """Perform one Double DQN training step.
+
+            Samples a batch from replay memory and updates the policy network
+            using the Double DQN target computation.
+
+            Returns:
+                Loss value (float) if enough samples in memory, else None.
+            """
             if len(self.memory) < self.batch_size:
                 return None
 
