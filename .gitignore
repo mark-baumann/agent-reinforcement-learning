@@ -1,0 +1,7 @@
+# Generated artifacts
+checkpoints/
+wandb/
+*.jsonl
+__pycache__/
+.venv/
+*.pyc
