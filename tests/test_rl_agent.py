@@ -10,7 +10,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from rl_agent import (
-    GridWorld, QLearning, PolicyGradient, OpenPipeLogger,
+    GridWorld, QLearning, PolicyGradient, OpenPipeLogger, WandBLogger,
     setup_tracking, get_sweep_config, log_model_artifact,
     log_predictions_table,
     WANDB_AVAILABLE, OPENPIPE_AVAILABLE, TORCH_AVAILABLE
@@ -294,6 +294,57 @@ class TestWandBIntegration:
         assert "hidden_dim" in config["parameters"]
 
 
+class TestWandBLogger:
+    """Tests für die neue WandBLogger-Klasse."""
+
+    def test_initialization_offline(self):
+        """WandBLogger sollte im Offline-Modus initialisieren."""
+        logger = WandBLogger(
+            project="test-project",
+            config={"lr": 0.1},
+            tags=["test"],
+            group="test-group",
+            job_type="test",
+            notes="Test-Run",
+            offline=True,
+        )
+        if WANDB_AVAILABLE:
+            assert logger.is_active
+            assert logger.run is not None
+        else:
+            assert not logger.is_active
+        logger.finish()
+
+    def test_log_metrics(self):
+        """Metriken sollten ohne Fehler geloggt werden."""
+        logger = WandBLogger(project="test-project", offline=True)
+        if logger.is_active:
+            logger.log({"test_metric": 1.0})
+            logger.log_episode("ql", episode=1, reward=0.5, steps=10, epsilon=0.3)
+        logger.finish()
+
+    def test_log_table(self):
+        """Tabellen sollten ohne Fehler geloggt werden."""
+        logger = WandBLogger(project="test-project", offline=True)
+        if logger.is_active:
+            logger.log_table("test_table", ["col1", "col2"], [["a", 1], ["b", 2]])
+        logger.finish()
+
+    def test_log_sweep_config(self):
+        """Sweep-Konfiguration sollte geloggt werden."""
+        logger = WandBLogger(project="test-project", offline=True)
+        if logger.is_active:
+            logger.log_sweep_config("q_learning")
+        logger.finish()
+
+    def test_finish_cleans_up(self):
+        """finish() sollte den Run beenden."""
+        logger = WandBLogger(project="test-project", offline=True)
+        logger.finish()
+        # Nach finish() sollte kein Fehler auftreten
+        logger.finish()  # Doppeltes finish() sollte safe sein
+
+
 # ═══════════════════════════════════════════════════════════════
 # OpenPipe Tests
 # ═══════════════════════════════════════════════════════════════
@@ -336,6 +387,46 @@ class TestOpenPipe:
         assert export_path.exists()
         with open(export_path) as f:
             assert f.read() == ""
+
+    def test_get_statistics(self):
+        """get_statistics() sollte korrekte Statistiken liefern."""
+        logger = OpenPipeLogger()
+        logger.log_episode({"episode": 1, "reward": 0.5, "algorithm": "q-learning"})
+        logger.log_episode({"episode": 2, "reward": 0.8, "algorithm": "q-learning"})
+        logger.log_episode({"episode": 3, "reward": 0.3, "algorithm": "reinforce"})
+
+        stats = logger.get_statistics()
+        assert stats["total_episodes"] == 3
+        assert stats["total_reward"] == 1.6
+        assert abs(stats["avg_reward"] - 0.5333) < 0.01
+        assert "q-learning" in stats["algorithms"]
+        assert "reinforce" in stats["algorithms"]
+
+    def test_get_statistics_empty(self):
+        """get_statistics() sollte mit leeren Daten umgehen."""
+        logger = OpenPipeLogger()
+        stats = logger.get_statistics()
+        assert stats["total_episodes"] == 0
+        assert stats["avg_reward"] == 0.0
+
+    def test_export_jsonl_with_compress(self, tmp_path):
+        """Export mit Kompression sollte .jsonl und .jsonl.gz erstellen."""
+        logger = OpenPipeLogger()
+        logger.log_episode({"episode": 1, "reward": 0.5})
+        logger.log_episode({"episode": 2, "reward": 0.8})
+
+        export_path = tmp_path / "test_data.jsonl"
+        logger.export_jsonl(str(export_path), compress=True)
+
+        assert export_path.exists()
+        gz_path = tmp_path / "test_data.jsonl.gz"
+        assert gz_path.exists()
+
+    def test_upload_to_openpipe_no_client(self):
+        """upload_to_openpipe() sollte False zurückgeben ohne Client."""
+        logger = OpenPipeLogger()  # Kein API-Key → kein Client
+        result = logger.upload_to_openpipe()
+        assert result is False
 
 
 # ═══════════════════════════════════════════════════════════════

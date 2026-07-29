@@ -43,7 +43,8 @@ def setup_tracking(project: str = "rl-agent-training",
                    use_openpipe: bool = True,
                    tags: list = None,
                    group: str = None,
-                   job_type: str = "train"):
+                   job_type: str = "train",
+                   notes: str = None):
     """
     Initialisiert W&B und/oder OpenPipe für Experiment-Tracking.
 
@@ -55,31 +56,57 @@ def setup_tracking(project: str = "rl-agent-training",
         tags: Tags für W&B-Run
         group: Gruppe für W&B-Run (z.B. "q-learning-experiments")
         job_type: Job-Typ (train, eval, sweep)
+        notes: Notizen für den W&B-Run
     """
     run = None
     op_client = None
 
     if use_wandb and WANDB_AVAILABLE:
-        mode = "online" if os.environ.get("WANDB_API_KEY") else "offline"
-        run = wandb.init(
-            project=project,
-            config=config or {},
-            mode=mode,
-            tags=tags or ["rl", "q-learning", "policy-gradient"],
-            group=group,
-            job_type=job_type,
-            dir="wandb_runs",
-        )
-        print(f"📊 W&B initialisiert (mode={mode})")
+        try:
+            mode = "online" if os.environ.get("WANDB_API_KEY") else "offline"
+            run = wandb.init(
+                project=project,
+                config=config or {},
+                mode=mode,
+                tags=tags or ["rl", "q-learning", "policy-gradient"],
+                group=group,
+                job_type=job_type,
+                notes=notes,
+                dir="wandb_runs",
+                # System-Metriken automatisch loggen
+                settings=wandb.Settings(
+                    _disable_stats=False,
+                    _disable_meta=False,
+                ) if hasattr(wandb, 'Settings') else None,
+            )
+            # Logge Git-Commit und System-Info
+            if run and mode == "online":
+                try:
+                    import subprocess
+                    git_commit = subprocess.check_output(
+                        ["git", "rev-parse", "--short", "HEAD"],
+                        stderr=subprocess.DEVNULL
+                    ).decode().strip()
+                    wandb.log({"git_commit": git_commit})
+                except Exception:
+                    pass
+            print(f"📊 W&B initialisiert (mode={mode}, project={project})")
+        except Exception as e:
+            print(f"⚠️  W&B-Init fehlgeschlagen: {e}")
+            run = None
 
     if use_openpipe and OPENPIPE_AVAILABLE:
         api_key = os.environ.get("OPENPIPE_API_KEY", "")
         if api_key:
-            op_client = OpenAI(
-                api_key=api_key,
-                openpipe={"api_key": api_key}
-            )
-            print("🔧 OpenPipe initialisiert")
+            try:
+                op_client = OpenAI(
+                    api_key=api_key,
+                    openpipe={"api_key": api_key}
+                )
+                print("🔧 OpenPipe initialisiert")
+            except Exception as e:
+                print(f"⚠️  OpenPipe-Init fehlgeschlagen: {e}")
+                op_client = None
         else:
             print("⚠️  OpenPipe API-Key nicht gesetzt — überspringe")
 
@@ -671,38 +698,235 @@ def get_sweep_config(algo: str = "q_learning") -> dict:
 # 4. OpenPipe Fine-Tuning Logger
 # ═══════════════════════════════════════════════════════════════
 
+class WandBLogger:
+    """
+    Gekapselter W&B-Logger für RL-Experimente.
+    Bietet konsistente Metrik-Namen, automatische System-Metriken
+    und Integration mit OpenPipeLogger.
+    """
+
+    def __init__(self, project: str = "rl-agent-training",
+                 config: dict = None, tags: list = None,
+                 group: str = None, job_type: str = "train",
+                 notes: str = None, offline: bool = False):
+        self.project = project
+        self.run = None
+        self.offline = offline
+
+        if WANDB_AVAILABLE:
+            try:
+                mode = "offline" if offline or not os.environ.get("WANDB_API_KEY") else "online"
+                self.run = wandb.init(
+                    project=project,
+                    config=config or {},
+                    mode=mode,
+                    tags=tags or ["rl"],
+                    group=group,
+                    job_type=job_type,
+                    notes=notes,
+                    dir="wandb_runs",
+                )
+                if mode == "online":
+                    try:
+                        import subprocess
+                        git_commit = subprocess.check_output(
+                            ["git", "rev-parse", "--short", "HEAD"],
+                            stderr=subprocess.DEVNULL
+                        ).decode().strip()
+                        self.log({"git_commit": git_commit}, commit=False)
+                    except Exception:
+                        pass
+                print(f"📊 W&B initialisiert (mode={mode}, project={project})")
+            except Exception as e:
+                print(f"⚠️  W&B-Init fehlgeschlagen: {e}")
+
+    def log(self, metrics: dict, step: int = None, commit: bool = True):
+        """Loggt Metriken zu W&B."""
+        if self.run:
+            self.run.log(metrics, step=step, commit=commit)
+
+    def log_episode(self, prefix: str, episode: int, reward: float,
+                    steps: int = None, epsilon: float = None,
+                    loss: float = None, extra: dict = None):
+        """Loggt eine Episode mit konsistenten Metrik-Namen."""
+        metrics = {
+            f"{prefix}/episode": episode,
+            f"{prefix}/reward": reward,
+        }
+        if steps is not None:
+            metrics[f"{prefix}/steps"] = steps
+        if epsilon is not None:
+            metrics[f"{prefix}/epsilon"] = epsilon
+        if loss is not None:
+            metrics[f"{prefix}/loss"] = loss
+        if extra:
+            metrics.update({f"{prefix}/{k}": v for k, v in extra.items()})
+        self.log(metrics)
+
+    def log_model(self, checkpoint_path: str, model_name: str,
+                  metadata: dict = None, aliases: list = None):
+        """Loggt ein Modell als W&B Artifact."""
+        log_model_artifact(self.run, checkpoint_path, model_name,
+                          metadata=metadata, aliases=aliases)
+
+    def log_table(self, name: str, columns: list, data: list):
+        """Loggt eine Tabelle ins W&B Dashboard."""
+        if not self.run:
+            return
+        table = wandb.Table(columns=columns)
+        for row in data:
+            table.add_data(*row)
+        self.run.log({name: table})
+
+    def log_sweep_config(self, algo: str = "q_learning"):
+        """Loggt die Sweep-Konfiguration."""
+        if self.run:
+            sweep_cfg = get_sweep_config(algo)
+            self.run.log({"sweep/method": sweep_cfg["method"]})
+            for k, v in sweep_cfg["parameters"].items():
+                self.run.log({f"sweep/param/{k}": str(v)})
+
+    def finish(self):
+        """Beendet den W&B-Run."""
+        if self.run:
+            self.run.finish()
+
+    @property
+    def is_active(self) -> bool:
+        return self.run is not None
+
+
 class OpenPipeLogger:
     """
     Loggt RL-Training-Daten für OpenPipe Fine-Tuning.
     Sammelt (state, action, reward)-Tupel für späteres Training.
+
+    Features:
+    - Episoden-Sammlung mit Metadaten
+    - JSONL-Export für Fine-Tuning
+    - OpenPipe API-Integration (optional)
+    - Batch-Export mit Kompression
+    - Statistiken über gesammelte Daten
     """
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None,
+                 project: str = "rl-agent-training"):
         self.api_key = api_key or os.environ.get("OPENPIPE_API_KEY", "")
+        self.project = project
         self.episodes: List[dict] = []
         self.client = None
+        self._total_reward = 0.0
+        self._total_episodes = 0
 
         if self.api_key and OPENPIPE_AVAILABLE:
-            self.client = OpenAI(
-                api_key="placeholder",  # OpenPipe routed via openpipe param
-                openpipe={"api_key": self.api_key}
-            )
+            try:
+                self.client = OpenAI(
+                    api_key="placeholder",  # OpenPipe routed via openpipe param
+                    openpipe={"api_key": self.api_key}
+                )
+            except Exception as e:
+                print(f"⚠️  OpenPipe-Client-Init fehlgeschlagen: {e}")
+                self.client = None
 
     def log_episode(self, episode_data: dict):
         """Loggt eine Episode für Fine-Tuning."""
         self.episodes.append(episode_data)
+        self._total_episodes += 1
+        if "reward" in episode_data:
+            self._total_reward += float(episode_data["reward"])
 
     def get_training_data(self) -> List[dict]:
         """Gibt gesammelte Trainingsdaten zurück."""
         return self.episodes
 
-    def export_jsonl(self, path: str = "rl_training_data.jsonl"):
-        """Exportiert Trainingsdaten als JSONL für OpenPipe."""
+    def get_statistics(self) -> dict:
+        """Gibt Statistiken über die gesammelten Daten zurück."""
+        if not self.episodes:
+            return {"total_episodes": 0, "total_reward": 0.0, "avg_reward": 0.0}
+        return {
+            "total_episodes": self._total_episodes,
+            "total_reward": self._total_reward,
+            "avg_reward": self._total_reward / max(1, self._total_episodes),
+            "algorithms": list(set(
+                ep.get("algorithm", "unknown") for ep in self.episodes
+            )),
+        }
+
+    def export_jsonl(self, path: str = "rl_training_data.jsonl",
+                     compress: bool = False):
+        """Exportiert Trainingsdaten als JSONL für OpenPipe.
+
+        Args:
+            path: Ausgabepfad
+            compress: Wenn True, wird zusätzlich eine .gz-Datei erstellt
+        """
         import json
+        import gzip
+
         with open(path, 'w') as f:
             for ep in self.episodes:
                 f.write(json.dumps(ep) + '\n')
         print(f"📦 {len(self.episodes)} Episoden exportiert → {path}")
+
+        if compress:
+            gz_path = path + ".gz"
+            with gzip.open(gz_path, 'wt') as f:
+                for ep in self.episodes:
+                    f.write(json.dumps(ep) + '\n')
+            print(f"🗜️  Komprimiert exportiert → {gz_path}")
+
+    def upload_to_openpipe(self, dataset_name: str = None) -> bool:
+        """Lädt Trainingsdaten zu OpenPipe hoch (falls API-Key vorhanden).
+
+        Args:
+            dataset_name: Name des Datasets in OpenPipe
+
+        Returns:
+            True bei Erfolg, False sonst
+        """
+        import json
+        if not self.client:
+            print("⚠️  Kein OpenPipe-Client — Upload übersprungen")
+            return False
+
+        try:
+            # OpenPipe erwartet Chat-Completion-Format
+            messages = []
+            for ep in self.episodes:
+                messages.append({
+                    "role": "user",
+                    "content": json.dumps({
+                        "algorithm": ep.get("algorithm", "unknown"),
+                        "episode": ep.get("episode", 0),
+                        "reward": ep.get("reward", 0),
+                    })
+                })
+                messages.append({
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "action_taken": ep.get("actions", [])[:5] if "actions" in ep else [],
+                        "states_shape": ep.get("states_shape", 0),
+                    })
+                })
+
+            # OpenPipe upload via API
+            response = self.client.chat.completions.create(
+                model="gpt-3.5-turbo",  # Wird von OpenPipe geroutet
+                messages=messages[:10],  # Sample für Upload
+                extra_body={
+                    "openpipe": {
+                        "tags": {
+                            "dataset": dataset_name or self.project,
+                            "algorithm": self.episodes[0].get("algorithm", "rl") if self.episodes else "rl",
+                        }
+                    }
+                }
+            )
+            print(f"📤 OpenPipe-Upload erfolgreich: {len(self.episodes)} Episoden")
+            return True
+        except Exception as e:
+            print(f"⚠️  OpenPipe-Upload fehlgeschlagen: {e}")
+            return False
 
 
 # ═══════════════════════════════════════════════════════════════

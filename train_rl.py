@@ -21,7 +21,7 @@ from pathlib import Path
 
 from rl_agent import (
     GridWorld, QLearning, PolicyGradient, DQNAgent,
-    setup_tracking, get_sweep_config, OpenPipeLogger,
+    setup_tracking, get_sweep_config, OpenPipeLogger, WandBLogger,
     log_model_artifact, log_predictions_table,
     WANDB_AVAILABLE, OPENPIPE_AVAILABLE, TORCH_AVAILABLE
 )
