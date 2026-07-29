@@ -1,7 +1,8 @@
 # Agent Reinforcement Learning
 # ============================
-# Dependencies for RL training with W&B + OpenPipe
+# Dependencies for RL training with W&B + OpenPipe + PyTorch
 
 numpy>=1.24.0
 wandb>=0.15.0
 openpipe>=5.0.0
+torch>=2.0.0

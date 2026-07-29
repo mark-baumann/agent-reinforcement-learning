@@ -1,12 +1,12 @@
 """
-Agent Reinforcement Learning — Q-Learning & Policy Gradient
-===========================================================
+Agent Reinforcement Learning — Q-Learning, DQN & Policy Gradient
+=================================================================
 Grundlagen des Reinforcement Learning für AI Agents.
 Mit W&B Experiment Tracking & OpenPipe Fine-Tuning.
 
 Implementiert:
 1. Q-Learning (Tabular) — GridWorld
-2. Deep Q-Network (DQN) — CartPole
+2. Deep Q-Network (DQN) — PyTorch, Double DQN
 3. Policy Gradient (REINFORCE) — CartPole
 4. W&B Integration — Experiment Tracking & Sweeps
 5. OpenPipe Integration — Fine-Tuning Logging
@@ -315,40 +315,295 @@ class PolicyGradient:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 3. W&B Sweep Configuration
+# 3. Deep Q-Network (DQN) — PyTorch
 # ═══════════════════════════════════════════════════════════════
 
-def get_sweep_config() -> dict:
-    """Hyperparameter-Sweep-Konfiguration für Q-Learning."""
-    return {
-        'method': 'bayes',
-        'metric': {
-            'name': 'q_learning/avg_reward_100',
-            'goal': 'maximize'
-        },
-        'parameters': {
-            'learning_rate': {
-                'distribution': 'log_uniform',
-                'min': 1e-3,
-                'max': 5e-1
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    from collections import deque
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    nn = None  # type: ignore
+    optim = None  # type: ignore
+    torch = None  # type: ignore
+
+
+if TORCH_AVAILABLE:
+
+    class DQNNetwork(nn.Module):
+        """Einfaches MLP für Q-Wert-Approximation."""
+
+        def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 128):
+            super().__init__()
+            self.net = nn.Sequential(
+                nn.Linear(state_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, action_dim),
+            )
+
+        def forward(self, x):
+            return self.net(x)
+
+
+    class DQNAgent:
+        """
+        Deep Q-Network mit Experience Replay, Target Network, Double DQN.
+
+        Funktioniert mit GridWorld (state = (row, col) → normalisiert) und
+        anderen Umgebungen mit flachem State-Vektor.
+        """
+
+        def __init__(self, state_dim: int, action_dim: int,
+                     lr: float = 0.001, gamma: float = 0.99,
+                     epsilon_start: float = 1.0, epsilon_end: float = 0.01,
+                     epsilon_decay: float = 0.995,
+                     memory_size: int = 10_000, batch_size: int = 64,
+                     target_update: int = 10, hidden_dim: int = 128,
+                     wandb_run=None, device: str = "cpu"):
+            self.state_dim = state_dim
+            self.action_dim = action_dim
+            self.gamma = gamma
+            self.epsilon = epsilon_start
+            self.epsilon_end = epsilon_end
+            self.epsilon_decay = epsilon_decay
+            self.batch_size = batch_size
+            self.target_update = target_update
+            self.wandb_run = wandb_run
+            self.device = torch.device(device)
+
+            self.policy_net = DQNNetwork(state_dim, action_dim, hidden_dim).to(self.device)
+            self.target_net = DQNNetwork(state_dim, action_dim, hidden_dim).to(self.device)
+            self.target_net.load_state_dict(self.policy_net.state_dict())
+            self.target_net.eval()
+
+            self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
+            self.memory = deque(maxlen=memory_size)
+            self.loss_fn = nn.MSELoss()
+
+        def select_action(self, state, evaluate: bool = False) -> int:
+            """Epsilon-greedy Action-Selection."""
+            if evaluate or random.random() > self.epsilon:
+                with torch.no_grad():
+                    state_t = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+                    q_values = self.policy_net(state_t)
+                    return q_values.argmax(dim=1).item()
+            return random.randrange(self.action_dim)
+
+        def push(self, state, action, reward, next_state, done):
+            """Erfahrung im Replay-Buffer speichern."""
+            self.memory.append((state, action, reward, next_state, done))
+
+        def update(self):
+            """Ein Trainingsschritt (Double DQN)."""
+            if len(self.memory) < self.batch_size:
+                return None
+
+            batch = random.sample(self.memory, self.batch_size)
+            states, actions, rewards, next_states, dones = zip(*batch)
+
+            states = torch.FloatTensor(np.array(states)).to(self.device)
+            actions = torch.LongTensor(actions).to(self.device)
+            rewards = torch.FloatTensor(rewards).to(self.device)
+            next_states = torch.FloatTensor(np.array(next_states)).to(self.device)
+            dones = torch.FloatTensor(dones).to(self.device)
+
+            q_values = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+
+            with torch.no_grad():
+                next_actions = self.policy_net(next_states).argmax(dim=1)
+                next_q_values = self.target_net(next_states).gather(
+                    1, next_actions.unsqueeze(1)
+                ).squeeze(1)
+                target_q = rewards + self.gamma * next_q_values * (1 - dones)
+
+            loss = self.loss_fn(q_values, target_q)
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1.0)
+            self.optimizer.step()
+
+            return loss.item()
+
+        def update_target(self):
+            """Target-Network auf Policy-Network synchronisieren."""
+            self.target_net.load_state_dict(self.policy_net.state_dict())
+
+        def decay_epsilon(self):
+            """Epsilon exponentiell reduzieren."""
+            self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+
+        def train(self, env, episodes: int = 500, log_interval: int = 10):
+            """
+            Vollständiges DQN-Training auf einer Umgebung.
+
+            Args:
+                env: Umgebung mit .reset() → state, .step(action) → (next_state, reward, done)
+                episodes: Anzahl Episoden
+                log_interval: W&B-Logging-Intervall
+
+            Returns:
+                Liste von Episode-Rewards
+            """
+            rewards_history = []
+            losses_history = []
+
+            for ep in range(1, episodes + 1):
+                state = env.reset()
+                episode_reward = 0.0
+                episode_losses = []
+                steps = 0
+                done = False
+
+                while not done:
+                    action = self.select_action(state)
+                    next_state, reward, done = env.step(action)
+
+                    self.push(state, action, reward, next_state, done)
+                    state = next_state
+                    episode_reward += reward
+                    steps += 1
+
+                    loss = self.update()
+                    if loss is not None:
+                        episode_losses.append(loss)
+
+                rewards_history.append(episode_reward)
+                avg_loss = np.mean(episode_losses) if episode_losses else 0.0
+                losses_history.append(avg_loss)
+
+                self.decay_epsilon()
+
+                if ep % self.target_update == 0:
+                    self.update_target()
+
+                if self.wandb_run and ep % log_interval == 0:
+                    self.wandb_run.log({
+                        "dqn/episode": ep,
+                        "dqn/reward": episode_reward,
+                        "dqn/avg_reward_100": np.mean(rewards_history[-100:]),
+                        "dqn/epsilon": self.epsilon,
+                        "dqn/loss": avg_loss,
+                        "dqn/steps": steps,
+                    })
+
+            return rewards_history
+
+        def save_checkpoint(self, path: str = "dqn_checkpoint.pt"):
+            """Speichert Modell, Optimizer und Hyperparameter."""
+            torch.save({
+                'policy_net': self.policy_net.state_dict(),
+                'target_net': self.target_net.state_dict(),
+                'optimizer': self.optimizer.state_dict(),
+                'epsilon': self.epsilon,
+                'gamma': self.gamma,
+            }, path)
+            print(f"💾 DQN Checkpoint gespeichert → {path}")
+
+        def load_checkpoint(self, path: str = "dqn_checkpoint.pt"):
+            """Lädt Modell, Optimizer und Hyperparameter."""
+            checkpoint = torch.load(path, map_location=self.device)
+            self.policy_net.load_state_dict(checkpoint['policy_net'])
+            self.target_net.load_state_dict(checkpoint['target_net'])
+            self.optimizer.load_state_dict(checkpoint['optimizer'])
+            self.epsilon = checkpoint['epsilon']
+            self.gamma = checkpoint['gamma']
+            print(f"📂 DQN Checkpoint geladen ← {path}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# 4. W&B Sweep Configurations
+# ═══════════════════════════════════════════════════════════════
+
+def get_sweep_config(algo: str = "q_learning") -> dict:
+    """Hyperparameter-Sweep-Konfiguration für Q-Learning oder DQN."""
+    if algo == "dqn":
+        return {
+            'method': 'bayes',
+            'metric': {
+                'name': 'dqn/avg_reward_100',
+                'goal': 'maximize'
             },
-            'gamma': {
-                'distribution': 'uniform',
-                'min': 0.9,
-                'max': 0.999
-            },
-            'epsilon_start': {
-                'distribution': 'uniform',
-                'min': 0.1,
-                'max': 0.5
-            },
-            'epsilon_decay': {
-                'distribution': 'uniform',
-                'min': 0.99,
-                'max': 0.999
+            'parameters': {
+                'learning_rate': {
+                    'distribution': 'log_uniform',
+                    'min': 1e-4,
+                    'max': 1e-2
+                },
+                'gamma': {
+                    'distribution': 'uniform',
+                    'min': 0.9,
+                    'max': 0.999
+                },
+                'batch_size': {
+                    'values': [32, 64, 128]
+                },
+                'hidden_dim': {
+                    'values': [64, 128, 256]
+                },
+                'target_update': {
+                    'values': [5, 10, 20]
+                }
             }
         }
-    }
+    elif algo == "policy_gradient":
+        return {
+            'method': 'bayes',
+            'metric': {
+                'name': 'policy_gradient/avg_reward_50',
+                'goal': 'maximize'
+            },
+            'parameters': {
+                'learning_rate': {
+                    'distribution': 'log_uniform',
+                    'min': 1e-4,
+                    'max': 1e-1
+                },
+                'gamma': {
+                    'distribution': 'uniform',
+                    'min': 0.9,
+                    'max': 0.999
+                },
+                'hidden_dim': {
+                    'values': [16, 32, 64]
+                }
+            }
+        }
+    else:
+        return {
+            'method': 'bayes',
+            'metric': {
+                'name': 'q_learning/avg_reward_100',
+                'goal': 'maximize'
+            },
+            'parameters': {
+                'learning_rate': {
+                    'distribution': 'log_uniform',
+                    'min': 1e-3,
+                    'max': 5e-1
+                },
+                'gamma': {
+                    'distribution': 'uniform',
+                    'min': 0.9,
+                    'max': 0.999
+                },
+                'epsilon_start': {
+                    'distribution': 'uniform',
+                    'min': 0.1,
+                    'max': 0.5
+                },
+                'epsilon_decay': {
+                    'distribution': 'uniform',
+                    'min': 0.99,
+                    'max': 0.999
+                }
+            }
+        }
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -479,15 +734,53 @@ if __name__ == "__main__":
     print(f"   Episoden: 200")
     print(f"   Finale 10-Episoden Avg-Reward: {np.mean(total_rewards[-10:]):.1f}")
 
+    # ── DQN (PyTorch) auf GridWorld ──────────────────────────
+    if TORCH_AVAILABLE:
+        print("\n🤖 DQN (PyTorch): GridWorld 4×4")
+        dqn_env = GridWorld(4)
+        dqn_agent = DQNAgent(
+            state_dim=2, action_dim=4,
+            lr=0.001, gamma=0.99,
+            epsilon_start=1.0, epsilon_decay=0.995,
+            memory_size=5000, batch_size=32,
+            target_update=10, hidden_dim=64,
+            wandb_run=wandb_run,
+        )
+        dqn_rewards = dqn_agent.train(dqn_env, episodes=300)
+        print(f"   Episoden: 300")
+        print(f"   Finale 10-Episoden Avg-Reward: {np.mean(dqn_rewards[-10:]):.3f}")
+
+        # DQN Policy visualisieren
+        print("\n   Gelernte DQN-Policy:")
+        for r in range(4):
+            row = "   "
+            for c in range(4):
+                if (r, c) == dqn_env.goal:
+                    row += " 🎯 "
+                else:
+                    state_vec = np.array([r / 4, c / 4], dtype=np.float32)
+                    with torch.no_grad():
+                        q_vals = dqn_agent.policy_net(
+                            torch.FloatTensor(state_vec).unsqueeze(0)
+                        )
+                        best = q_vals.argmax(dim=1).item()
+                    row += f" {arrows[best]} "
+            print(row)
+
+        dqn_agent.save_checkpoint("checkpoints/dqn_gridworld_4x4.pt")
+    else:
+        print("\n⚠️  PyTorch nicht installiert — DQN übersprungen")
+
     # ── OpenPipe Export ──────────────────────────────────────
     op_logger.export_jsonl("rl_training_data.jsonl")
 
     # ── W&B Sweep Info ───────────────────────────────────────
     if WANDB_AVAILABLE:
-        print("\n📊 W&B Sweep-Konfiguration:")
-        sweep_cfg = get_sweep_config()
-        print(f"   Methode: {sweep_cfg['method']}")
-        print(f"   Parameter: {list(sweep_cfg['parameters'].keys())}")
+        print("\n📊 W&B Sweep-Konfigurationen:")
+        for algo_name in ["q_learning", "dqn", "policy_gradient"]:
+            sweep_cfg = get_sweep_config(algo_name)
+            print(f"   {algo_name}: method={sweep_cfg['method']}, "
+                  f"params={list(sweep_cfg['parameters'].keys())}")
 
     # ── Cleanup ──────────────────────────────────────────────
     if wandb_run:

@@ -20,9 +20,9 @@ import numpy as np
 from pathlib import Path
 
 from rl_agent import (
-    GridWorld, QLearning, PolicyGradient,
+    GridWorld, QLearning, PolicyGradient, DQNAgent,
     setup_tracking, get_sweep_config, OpenPipeLogger,
-    WANDB_AVAILABLE, OPENPIPE_AVAILABLE
+    WANDB_AVAILABLE, OPENPIPE_AVAILABLE, TORCH_AVAILABLE
 )
 
 # ── Konfiguration ──────────────────────────────────────────────
@@ -140,11 +140,82 @@ def train_policy_gradient(config: dict, wandb_run=None,
     return pg
 
 
+def train_dqn(env: GridWorld, config: dict, wandb_run=None,
+              op_logger=None):
+    """Trainiert DQN (PyTorch) auf der gegebenen Umgebung."""
+    if not TORCH_AVAILABLE:
+        print("❌ PyTorch nicht installiert — DQN übersprungen")
+        return None
+
+    print(f"\n{'='*60}")
+    print(f"  DQN (PyTorch): {config.get('env_name', 'GridWorld')}")
+    print(f"{'='*60}")
+
+    dqn = DQNAgent(
+        state_dim=2,  # (row, col) normalisiert
+        action_dim=4,
+        lr=config.get("lr", 0.001),
+        gamma=config.get("gamma", 0.99),
+        epsilon_start=config.get("epsilon_start", 1.0),
+        epsilon_decay=config.get("epsilon_decay", 0.995),
+        memory_size=config.get("memory_size", 5000),
+        batch_size=config.get("batch_size", 32),
+        target_update=config.get("target_update", 10),
+        hidden_dim=config.get("hidden_dim", 64),
+        wandb_run=wandb_run,
+    )
+
+    episodes = config.get("episodes", 500)
+    rewards = dqn.train(env, episodes=episodes)
+
+    avg_last_10 = np.mean(rewards[-10:])
+    avg_last_100 = np.mean(rewards[-100:])
+    print(f"\n  Episoden: {episodes}")
+    print(f"  Avg Reward (last 10):  {avg_last_10:.3f}")
+    print(f"  Avg Reward (last 100): {avg_last_100:.3f}")
+
+    # DQN Policy visualisieren
+    arrows = {0: "↑", 1: "→", 2: "↓", 3: "←"}
+    print("\n  Gelernte DQN-Policy:")
+    for r in range(env.size):
+        row = "  "
+        for c in range(env.size):
+            if (r, c) == env.goal:
+                row += " 🎯 "
+            else:
+                import torch
+                state_vec = np.array([r / env.size, c / env.size], dtype=np.float32)
+                with torch.no_grad():
+                    q_vals = dqn.policy_net(
+                        torch.FloatTensor(state_vec).unsqueeze(0)
+                    )
+                    best = q_vals.argmax(dim=1).item()
+                row += f" {arrows[best]} "
+        print(row)
+
+    # Checkpoint
+    ckpt_path = CHECKPOINT_DIR / f"dqn_{config.get('env_name', 'grid')}.pt"
+    dqn.save_checkpoint(str(ckpt_path))
+
+    if op_logger:
+        op_logger.log_episode({
+            "algorithm": "dqn",
+            "env": config.get("env_name", "gridworld"),
+            "episodes": episodes,
+            "final_avg_reward_10": float(avg_last_10),
+            "final_avg_reward_100": float(avg_last_100),
+            "lr": config.get("lr", 0.001),
+            "gamma": config.get("gamma", 0.99),
+        })
+
+    return dqn
+
+
 def main():
     parser = argparse.ArgumentParser(description="RL Training Pipeline")
     parser.add_argument("--env", choices=["standard", "cliff", "obstacles"],
                         default="standard", help="GridWorld-Variante")
-    parser.add_argument("--algo", choices=["ql", "pg", "all"],
+    parser.add_argument("--algo", choices=["ql", "pg", "dqn", "all"],
                         default="all", help="Algorithmus")
     parser.add_argument("--episodes", type=int, default=500,
                         help="Anzahl Episoden")
@@ -198,6 +269,12 @@ def main():
         pg_config = {**config, "state_dim": 4, "action_dim": 2,
                      "lr": 0.01, "max_steps": 100}
         train_policy_gradient(pg_config, wandb_run, op_logger)
+
+    if args.algo in ("dqn", "all"):
+        dqn_config = {**config, "lr": 0.001, "epsilon_start": 1.0,
+                      "epsilon_decay": 0.995, "memory_size": 5000,
+                      "batch_size": 32, "target_update": 10, "hidden_dim": 64}
+        train_dqn(env, dqn_config, wandb_run, op_logger)
 
     # ── OpenPipe Export ────────────────────────────────────────
     if op_logger:
