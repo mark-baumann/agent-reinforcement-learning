@@ -68,6 +68,7 @@ def setup_tracking(project: str = "rl-agent-training",
             tags=tags or ["rl", "q-learning", "policy-gradient"],
             group=group,
             job_type=job_type,
+            dir="wandb_runs",
         )
         print(f"📊 W&B initialisiert (mode={mode})")
 

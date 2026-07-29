@@ -1,6 +1,6 @@
 # Generated artifacts
 checkpoints/
-wandb/
+wandb_runs/
 *.jsonl
 __pycache__/
 .venv/
