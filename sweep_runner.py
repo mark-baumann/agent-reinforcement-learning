@@ -24,8 +24,11 @@ from pathlib import Path
 from rl_agent import (
     GridWorld, QLearning, PolicyGradient,
     setup_tracking, get_sweep_config, OpenPipeLogger,
-    WANDB_AVAILABLE
+    WANDB_AVAILABLE, TORCH_AVAILABLE
 )
+
+if TORCH_AVAILABLE:
+    from rl_agent import DQNAgent
 
 CHECKPOINT_DIR = Path("checkpoints")
 CHECKPOINT_DIR.mkdir(exist_ok=True)
@@ -79,6 +82,54 @@ def train_sweep():
 
     # ── Checkpoint ────────────────────────────────────────────
     ckpt_path = CHECKPOINT_DIR / f"sweep_{run.id}.npz"
+    agent.save_checkpoint(str(ckpt_path))
+
+    run.finish()
+
+
+def train_dqn_sweep():
+    """Wird von wandb.agent() pro DQN-Sweep-Run aufgerufen."""
+    import wandb
+
+    run = wandb.init()
+
+    # ── Environment ──────────────────────────────────────────
+    env_type = wandb.config.get("env", "standard")
+    size = wandb.config.get("size", 4)
+    env = _make_env(env_type, size)
+
+    # ── DQN Agent ─────────────────────────────────────────────
+    agent = DQNAgent(
+        state_dim=2,
+        action_dim=4,
+        lr=wandb.config.learning_rate,
+        gamma=wandb.config.gamma,
+        epsilon_start=wandb.config.get("epsilon_start", 1.0),
+        epsilon_decay=wandb.config.get("epsilon_decay", 0.995),
+        memory_size=wandb.config.get("memory_size", 5000),
+        batch_size=wandb.config.batch_size,
+        target_update=wandb.config.target_update,
+        hidden_dim=wandb.config.hidden_dim,
+        wandb_run=run,
+    )
+
+    # ── Training ──────────────────────────────────────────────
+    episodes = wandb.config.get("episodes", 500)
+    rewards = agent.train(env, episodes=episodes)
+
+    # ── Final Metrics ─────────────────────────────────────────
+    avg_last_10 = np.mean(rewards[-10:])
+    avg_last_100 = np.mean(rewards[-100:])
+
+    wandb.log({
+        "final/avg_reward_10": avg_last_10,
+        "final/avg_reward_100": avg_last_100,
+        "final/max_reward": max(rewards),
+        "final/min_reward": min(rewards),
+    })
+
+    # ── Checkpoint ────────────────────────────────────────────
+    ckpt_path = CHECKPOINT_DIR / f"sweep_dqn_{run.id}.pt"
     agent.save_checkpoint(str(ckpt_path))
 
     run.finish()
@@ -161,16 +212,23 @@ def main():
                         help="Offline-Modus (kein W&B Cloud)")
     parser.add_argument("--sweep-id", type=str, default=None,
                         help="Existierende Sweep-ID (statt neuem Sweep)")
+    parser.add_argument("--algo", choices=["ql", "dqn"], default="ql",
+                        help="Algorithmus für Sweep (ql=q-learning, dqn=deep-q-network)")
     args = parser.parse_args()
 
     if not WANDB_AVAILABLE:
         print("❌ W&B nicht installiert. Installiere mit: pip install wandb")
         sys.exit(1)
 
+    if args.algo == "dqn" and not TORCH_AVAILABLE:
+        print("❌ DQN benötigt PyTorch. Installiere mit: pip install torch")
+        sys.exit(1)
+
     import wandb
 
     # ── Sweep Configuration ───────────────────────────────────
-    sweep_config = get_sweep_config()
+    algo_key = "dqn" if args.algo == "dqn" else "q_learning"
+    sweep_config = get_sweep_config(algo_key)
 
     # Erweitere mit Environment-Parametern
     sweep_config["parameters"]["env"] = {"value": args.env}
@@ -197,6 +255,7 @@ def main():
             raise
 
     print(f"   Project: rl-agent-training")
+    print(f"   Algorithm: {args.algo.upper()}")
     print(f"   Method: {sweep_config['method']}")
     print(f"   Metric: {sweep_config['metric']['name']} ({sweep_config['metric']['goal']})")
     print(f"   Parameters: {list(sweep_config['parameters'].keys())}")
@@ -208,7 +267,8 @@ def main():
     if args.offline:
         os.environ["WANDB_MODE"] = "offline"
 
-    wandb.agent(sweep_id, function=train_sweep, count=args.count)
+    train_fn = train_dqn_sweep if args.algo == "dqn" else train_sweep
+    wandb.agent(sweep_id, function=train_fn, count=args.count)
 
     print(f"\n✅ Sweep abgeschlossen!")
     print(f"   Sweep ID: {sweep_id}")

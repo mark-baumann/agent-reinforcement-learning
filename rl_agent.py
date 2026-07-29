@@ -541,8 +541,12 @@ if TORCH_AVAILABLE:
             rewards_history = []
             losses_history = []
 
+            # Normalisierungsfaktor für GridWorld-States
+            grid_size = getattr(env, 'size', 1)
+
             for ep in range(1, episodes + 1):
-                state = env.reset()
+                raw_state = env.reset()
+                state = np.array(raw_state, dtype=np.float32) / max(grid_size - 1, 1)
                 episode_reward = 0.0
                 episode_losses = []
                 steps = 0
@@ -550,7 +554,8 @@ if TORCH_AVAILABLE:
 
                 while not done:
                     action = self.select_action(state)
-                    next_state, reward, done = env.step(action)
+                    raw_next, reward, done = env.step(action)
+                    next_state = np.array(raw_next, dtype=np.float32) / max(grid_size - 1, 1)
 
                     self.push(state, action, reward, next_state, done)
                     state = next_state
