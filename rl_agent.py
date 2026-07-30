@@ -802,6 +802,100 @@ class WandBLogger:
         return self.run is not None
 
 
+class ExperimentTracker:
+    """
+    Einheitlicher Tracker für W&B + OpenPipe.
+    Fasst WandBLogger und OpenPipeLogger in einer Klasse zusammen.
+
+    Verwendung:
+        tracker = ExperimentTracker(project="rl-agent-training", config={...})
+        tracker.log_episode("q_learning", episode=1, reward=0.5, steps=10)
+        tracker.log_model("checkpoint.npz", "q-learning-model")
+        tracker.finish()
+    """
+
+    def __init__(self, project: str = "rl-agent-training",
+                 config: dict = None, tags: list = None,
+                 group: str = None, job_type: str = "train",
+                 notes: str = None, offline: bool = False,
+                 use_wandb: bool = True, use_openpipe: bool = True):
+        self.project = project
+        self.config = config or {}
+        self.wandb = None
+        self.openpipe = None
+
+        if use_wandb:
+            self.wandb = WandBLogger(
+                project=project, config=config, tags=tags,
+                group=group, job_type=job_type, notes=notes,
+                offline=offline,
+            )
+
+        if use_openpipe:
+            self.openpipe = OpenPipeLogger(project=project)
+
+    def log(self, metrics: dict, step: int = None):
+        """Loggt Metriken zu W&B."""
+        if self.wandb:
+            self.wandb.log(metrics, step=step)
+
+    def log_episode(self, prefix: str, episode: int, reward: float,
+                    steps: int = None, epsilon: float = None,
+                    loss: float = None, extra: dict = None):
+        """Loggt eine Episode zu W&B und OpenPipe."""
+        if self.wandb:
+            self.wandb.log_episode(prefix, episode, reward,
+                                   steps=steps, epsilon=epsilon,
+                                   loss=loss, extra=extra)
+        if self.openpipe:
+            data = {"episode": episode, "algorithm": prefix,
+                    "reward": reward}
+            if steps is not None:
+                data["steps"] = steps
+            if epsilon is not None:
+                data["epsilon"] = epsilon
+            if loss is not None:
+                data["loss"] = loss
+            if extra:
+                data.update(extra)
+            self.openpipe.log_episode(data)
+
+    def log_model(self, checkpoint_path: str, model_name: str,
+                  metadata: dict = None, aliases: list = None):
+        """Loggt ein Modell als W&B Artifact."""
+        if self.wandb:
+            self.wandb.log_model(checkpoint_path, model_name,
+                                metadata=metadata, aliases=aliases)
+
+    def log_table(self, name: str, columns: list, data: list):
+        """Loggt eine Tabelle ins W&B Dashboard."""
+        if self.wandb:
+            self.wandb.log_table(name, columns, data)
+
+    def export_openpipe(self, path: str = "rl_training_data.jsonl",
+                        compress: bool = False):
+        """Exportiert OpenPipe-Trainingsdaten als JSONL."""
+        if self.openpipe:
+            self.openpipe.export_jsonl(path, compress=compress)
+
+    def get_statistics(self) -> dict:
+        """Gibt Statistiken über gesammelte Daten zurück."""
+        if self.openpipe:
+            return self.openpipe.get_statistics()
+        return {"total_episodes": 0, "total_reward": 0.0, "avg_reward": 0.0}
+
+    def finish(self):
+        """Beendet W&B-Run und exportiert OpenPipe-Daten."""
+        if self.wandb:
+            self.wandb.finish()
+        if self.openpipe and self.openpipe.episodes:
+            self.openpipe.export_jsonl("rl_training_data.jsonl")
+
+    @property
+    def is_active(self) -> bool:
+        return (self.wandb and self.wandb.is_active) or False
+
+
 class OpenPipeLogger:
     """
     Loggt RL-Training-Daten für OpenPipe Fine-Tuning.

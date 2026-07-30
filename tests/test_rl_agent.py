@@ -430,6 +430,124 @@ class TestOpenPipe:
 
 
 # ═══════════════════════════════════════════════════════════════
+# ExperimentTracker Tests
+# ═══════════════════════════════════════════════════════════════
+
+class TestExperimentTracker:
+    """Tests für den einheitlichen ExperimentTracker (W&B + OpenPipe)."""
+
+    def test_initialization(self):
+        """ExperimentTracker sollte ohne Fehler initialisieren."""
+        from rl_agent import ExperimentTracker
+        tracker = ExperimentTracker(
+            project="test-project",
+            config={"lr": 0.1},
+            tags=["test"],
+            group="test-group",
+            job_type="test",
+            notes="Test-Run",
+            offline=True,
+        )
+        assert tracker.project == "test-project"
+        assert tracker.config == {"lr": 0.1}
+        tracker.finish()
+
+    def test_log_episode(self):
+        """log_episode() sollte W&B und OpenPipe bedienen."""
+        from rl_agent import ExperimentTracker
+        tracker = ExperimentTracker(
+            project="test-project",
+            offline=True,
+        )
+        tracker.log_episode("q_learning", episode=1, reward=0.5,
+                           steps=10, epsilon=0.3, loss=0.01,
+                           extra={"avg_reward_100": 0.45})
+        # OpenPipe sollte die Episode gespeichert haben
+        stats = tracker.get_statistics()
+        assert stats["total_episodes"] == 1
+        assert stats["total_reward"] == 0.5
+        tracker.finish()
+
+    def test_log_model(self, tmp_path):
+        """log_model() sollte ohne Fehler funktionieren."""
+        from rl_agent import ExperimentTracker
+        dummy_file = tmp_path / "dummy_model.npz"
+        dummy_file.write_text("dummy")
+        tracker = ExperimentTracker(project="test-project", offline=True)
+        tracker.log_model(str(dummy_file), "test-model",
+                         metadata={"algo": "q-learning"})
+        tracker.finish()
+
+    def test_log_table(self):
+        """log_table() sollte ohne Fehler funktionieren."""
+        from rl_agent import ExperimentTracker
+        tracker = ExperimentTracker(project="test-project", offline=True)
+        tracker.log_table("test_table", ["col1", "col2"],
+                         [["a", 1], ["b", 2]])
+        tracker.finish()
+
+    def test_export_openpipe(self, tmp_path):
+        """export_openpipe() sollte JSONL-Datei erstellen."""
+        from rl_agent import ExperimentTracker
+        tracker = ExperimentTracker(project="test-project", offline=True)
+        tracker.log_episode("ql", episode=1, reward=0.5)
+        tracker.log_episode("ql", episode=2, reward=0.8)
+
+        export_path = tmp_path / "test_export.jsonl"
+        tracker.export_openpipe(str(export_path))
+        assert export_path.exists()
+        with open(export_path) as f:
+            lines = f.readlines()
+        assert len(lines) == 2
+        tracker.finish()
+
+    def test_get_statistics(self):
+        """get_statistics() sollte korrekte Statistiken liefern."""
+        from rl_agent import ExperimentTracker
+        tracker = ExperimentTracker(project="test-project", offline=True)
+        tracker.log_episode("ql", episode=1, reward=0.5)
+        tracker.log_episode("pg", episode=2, reward=1.0)
+        stats = tracker.get_statistics()
+        assert stats["total_episodes"] == 2
+        assert stats["total_reward"] == 1.5
+        assert abs(stats["avg_reward"] - 0.75) < 0.01
+        tracker.finish()
+
+    def test_finish_cleans_up(self):
+        """finish() sollte W&B-Run beenden und OpenPipe exportieren."""
+        from rl_agent import ExperimentTracker
+        tracker = ExperimentTracker(project="test-project", offline=True)
+        tracker.log_episode("ql", episode=1, reward=0.5)
+        tracker.finish()
+        # Doppeltes finish() sollte safe sein
+        tracker.finish()
+
+    def test_is_active(self):
+        """is_active sollte korrekt den Status melden."""
+        from rl_agent import ExperimentTracker
+        tracker = ExperimentTracker(project="test-project", offline=True)
+        if WANDB_AVAILABLE:
+            assert tracker.is_active
+        else:
+            assert not tracker.is_active
+        tracker.finish()
+        assert not tracker.is_active
+
+    def test_no_wandb_no_openpipe(self):
+        """Tracker sollte auch ohne W&B und OpenPipe funktionieren."""
+        from rl_agent import ExperimentTracker
+        tracker = ExperimentTracker(
+            project="test-project",
+            use_wandb=False,
+            use_openpipe=False,
+        )
+        tracker.log_episode("ql", episode=1, reward=0.5)
+        stats = tracker.get_statistics()
+        assert stats["total_episodes"] == 0
+        tracker.finish()
+
+
+# ═══════════════════════════════════════════════════════════════
 # Integration Tests
 # ═══════════════════════════════════════════════════════════════
 
