@@ -47,3 +47,7 @@ __all__ = [
     "OPENPIPE_AVAILABLE",
     "TORCH_AVAILABLE",
 ]
+
+# DQN nur wenn PyTorch verfügbar
+if TORCH_AVAILABLE:
+    __all__.extend(["DQNAgent", "DQNNetwork"])
