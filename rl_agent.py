@@ -792,9 +792,10 @@ class WandBLogger:
                 self.run.log({f"sweep/param/{k}": str(v)})
 
     def finish(self):
-        """Beendet den W&B-Run."""
+        """Beendet den W&B-Run. Sicher bei mehrfachem Aufruf."""
         if self.run:
             self.run.finish()
+            self.run = None
 
     @property
     def is_active(self) -> bool:
