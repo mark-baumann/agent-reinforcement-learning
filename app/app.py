@@ -8,8 +8,11 @@ import streamlit as st
 import numpy as np
 import time
 import os
+import sys
 from collections import defaultdict
 import random
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 # ── RL-Agent-Module (keine Code-Duplizierung) ────────────────
 from rl_agent import (
