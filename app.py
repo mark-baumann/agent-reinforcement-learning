@@ -11,6 +11,12 @@ import os
 from collections import defaultdict
 import random
 
+# ── RL-Agent-Module (keine Code-Duplizierung) ────────────────
+from rl_agent import (
+    GridWorld, QLearning, PolicyGradient,
+    WANDB_AVAILABLE, OPENPIPE_AVAILABLE, TORCH_AVAILABLE,
+)
+
 # ── Page Config ──────────────────────────────────────────────
 st.set_page_config(
     page_title="Agenten-Verstärkungslernen",
@@ -59,69 +65,14 @@ if mode == "Q-Learning GridWorld":
         elif env_type == "Cliff":
             cliff = True
 
-        class GridWorld:
-            def __init__(self, size, obstacles=None, cliff=False):
-                self.size = size
-                self.goal = (size - 1, size - 1)
-                self.start = (0, 0)
-                self.obstacles = set(obstacles or [])
-                self.cliff = cliff
-                self.pos = self.start
+        env = GridWorld(size, obstacles=obstacles, cliff=cliff)
+        agent = QLearning(env, lr=lr, gamma=gamma, epsilon=epsilon_start)
+        rewards_history = agent.train(episodes=episodes)
 
-            def reset(self):
-                self.pos = self.start
-                return self.pos
-
-            def step(self, action):
-                r, c = self.pos
-                if action == 0: r = max(0, r - 1)
-                elif action == 1: c = min(self.size - 1, c + 1)
-                elif action == 2: r = min(self.size - 1, r + 1)
-                elif action == 3: c = max(0, c - 1)
-                new_pos = (r, c)
-                if self.cliff and r == self.size - 1 and 0 < c < self.size - 1:
-                    self.pos = self.start
-                    return self.pos, -1.0, False
-                if new_pos in self.obstacles:
-                    return self.pos, -0.1, False
-                self.pos = new_pos
-                done = self.pos == self.goal
-                reward = 1.0 if done else -0.01
-                return self.pos, reward, done
-
-        env = GridWorld(size, obstacles, cliff)
-        Q = defaultdict(lambda: np.zeros(4))
-        epsilon = epsilon_start
-        rewards_history = []
-
-        progress_bar = st.progress(0)
+        progress_bar = st.progress(1.0)
         status_text = st.empty()
-        chart_placeholder = st.empty()
-
-        for ep in range(episodes):
-            state = env.reset()
-            total_reward = 0
-            done = False
-            while not done:
-                if random.random() < epsilon:
-                    action = random.randint(0, 3)
-                else:
-                    action = int(np.argmax(Q[state]))
-                next_state, reward, done = env.step(action)
-                best_next = np.max(Q[next_state])
-                td_target = reward + gamma * best_next * (1 - done)
-                Q[state][action] += lr * (td_target - Q[state][action])
-                state = next_state
-                total_reward += reward
-            rewards_history.append(total_reward)
-            epsilon = max(0.01, epsilon * 0.995)
-
-            if ep % 10 == 0:
-                progress_bar.progress((ep + 1) / episodes)
-                status_text.text(f"Episode {ep+1}/{episodes} — Reward: {total_reward:.3f} — Epsilon: {epsilon:.3f}")
-
-        progress_bar.progress(1.0)
         status_text.text(f"✅ Training abgeschlossen! {episodes} Episoden.")
+        chart_placeholder = st.empty()
 
         # ── Reward-Verlauf ──────────────────────────────────
         chart_placeholder.line_chart(rewards_history, height=300)
@@ -129,6 +80,7 @@ if mode == "Q-Learning GridWorld":
         # ── Policy-Grid ─────────────────────────────────────
         st.subheader("📋 Gelernte Policy")
         action_names = {0: "↑", 1: "→", 2: "↓", 3: "←"}
+        policy = agent.get_policy()
         grid = np.zeros((size, size), dtype=object)
         for r in range(size):
             for c in range(size):
@@ -137,7 +89,7 @@ if mode == "Q-Learning GridWorld":
                 elif (r, c) in (obstacles or set()):
                     grid[r, c] = "🧱"
                 else:
-                    grid[r, c] = action_names.get(int(np.argmax(Q[(r, c)])), "?")
+                    grid[r, c] = action_names.get(int(policy[r, c]), "?")
 
         # Als Tabelle anzeigen
         cols = st.columns(size)
@@ -151,14 +103,7 @@ if mode == "Q-Learning GridWorld":
 
         # ── W&B Tracking Status ──────────────────────────────
         st.subheader("📊 W&B Tracking-Status")
-        wandb_available = False
-        try:
-            import wandb
-            wandb_available = True
-        except ImportError:
-            pass
-
-        if wandb_available:
+        if WANDB_AVAILABLE:
             api_key = os.environ.get("WANDB_API_KEY", "")
             if api_key:
                 st.success("✅ W&B verfügbar (online) — API-Key gesetzt")
@@ -167,14 +112,7 @@ if mode == "Q-Learning GridWorld":
         else:
             st.info("ℹ️ W&B nicht installiert. `pip install wandb` für Experiment-Tracking.")
 
-        openpipe_available = False
-        try:
-            from openpipe import OpenAI
-            openpipe_available = True
-        except ImportError:
-            pass
-
-        if openpipe_available:
+        if OPENPIPE_AVAILABLE:
             op_key = os.environ.get("OPENPIPE_API_KEY", "")
             if op_key:
                 st.success("✅ OpenPipe verfügbar — API-Key gesetzt")
@@ -205,17 +143,8 @@ elif mode == "Policy Gradient Demo":
 
     if st.button("🚀 Policy Gradient starten", type="primary", key="pg_btn"):
         action_dim = 2
-        W1 = np.random.randn(state_dim, 32) * 0.1
-        b1 = np.zeros(32)
-        W2 = np.random.randn(32, action_dim) * 0.1
-        b2 = np.zeros(action_dim)
-
-        def forward(state):
-            h = np.maximum(0, state @ W1 + b1)
-            logits = h @ W2 + b2
-            shifted = logits - np.max(logits)
-            exp = np.exp(shifted)
-            return exp / np.sum(exp)
+        pg = PolicyGradient(state_dim=state_dim, action_dim=action_dim,
+                           lr=lr_pg, gamma=gamma_pg)
 
         rewards_pg = []
         progress = st.progress(0)
@@ -226,34 +155,13 @@ elif mode == "Policy Gradient Demo":
             episode_data = []
             state = np.random.randn(state_dim) * 0.5
             for _ in range(20):
-                probs = forward(state)
-                action = np.random.choice(action_dim, p=probs)
+                action, probs = pg.sample_action(state)
                 reward = 1.0 if action == 0 else -0.5
                 reward += np.dot(state, np.ones(state_dim)) * 0.1
                 episode_data.append((state.copy(), action, reward))
                 state = np.random.randn(state_dim) * 0.5
 
-            # Compute returns
-            returns = []
-            G = 0
-            for _, _, r in reversed(episode_data):
-                G = r + gamma_pg * G
-                returns.insert(0, G)
-            returns = np.array(returns)
-            returns = (returns - returns.mean()) / (returns.std() + 1e-8)
-
-            for (s, a, _), G_val in zip(episode_data, returns):
-                probs = forward(s)
-                dlogits = probs.copy()
-                dlogits[a] -= 1
-                dlogits *= G_val
-                h = np.maximum(0, s @ W1 + b1)
-                dh = dlogits @ W2.T
-                dh[h <= 0] = 0
-                W2 -= lr_pg * np.outer(h, dlogits)
-                b2 -= lr_pg * dlogits
-                W1 -= lr_pg * np.outer(s, dh)
-                b1 -= lr_pg * dh
+            pg.update(episode_data)
 
             total_r = sum(r for _, _, r in episode_data)
             rewards_pg.append(total_r)
@@ -269,7 +177,7 @@ elif mode == "Policy Gradient Demo":
         st.subheader("📊 Finale Policy-Verteilung")
         test_states = np.random.randn(5, state_dim) * 0.5
         for i, s in enumerate(test_states):
-            probs = forward(s)
+            probs = pg.forward(s)
             st.write(f"State {i+1}: Aktion 0 = {probs[0]:.3f}, Aktion 1 = {probs[1]:.3f}")
 
 # ═══════════════════════════════════════════════════════════════
